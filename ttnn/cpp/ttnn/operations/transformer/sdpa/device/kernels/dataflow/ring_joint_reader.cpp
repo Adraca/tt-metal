@@ -67,6 +67,7 @@ void kernel_main() {
     const uint32_t next_core_q_chunks = get_arg_val<uint32_t>(argidx++);
     const uint32_t mcast_num_dests = get_arg_val<uint32_t>(argidx++);
     const uint32_t mcast_sender_wait = get_arg_val<uint32_t>(argidx++);
+    const uint32_t split_first_k_with_writer = get_arg_val<uint32_t>(argidx++);  // K prefetch split flag
 
     RingSDPAOpReceiver fused_op_receiver = RingSDPAOpReceiver(
         true, /* wait_for_op_signal */
@@ -82,6 +83,10 @@ void kernel_main() {
     uint32_t valid_semaphore_addr =
         get_semaphore(get_compile_time_arg_val(joint_v_args.next_compile_time_args_offset() + 2));
     constexpr bool mcast_enabled = get_compile_time_arg_val(joint_v_args.next_compile_time_args_offset() + 3) == 1;
+    uint32_t k_prefetch_semaphore_addr =
+        get_semaphore(get_compile_time_arg_val(joint_v_args.next_compile_time_args_offset() + 4));
+    volatile tt_l1_ptr uint32_t* k_prefetch_semaphore_addr_ptr =
+        reinterpret_cast<volatile tt_l1_ptr uint32_t*>(k_prefetch_semaphore_addr);
 
     // VALID sem used to write L1-L1 valid semaphore
     volatile tt_l1_ptr uint32_t* valid_semaphore_addr_ptr =
@@ -279,10 +284,33 @@ void kernel_main() {
                     }
                 }
 
-                // K: either read locally (injector or not participant) or receive from previous core
+                // K: either read locally, receive from chain, or split-read with writer (first K only)
+                const bool k_split_active =
+                    split_first_k_with_writer && ring_iter == 0 && k_chunk == 0 && !should_receive;
+
                 cb_reserve_back(cb_k_in, k_chunk_tiles);
                 uint32_t cb_k_start_address = get_write_ptr(cb_k_in);
-                if (should_receive) {
+                if (k_split_active) {
+                    // Split first K read: reader handles upper half rows [0, half_Sk),
+                    // writer handles lower half rows [half_Sk, Sk_chunk_t) on NOC1.
+                    // Transposed layout: tile(row,col) → base + row*tile_bytes + col*Sk_chunk_t*tile_bytes
+                    constexpr uint32_t half_Sk = Sk_chunk_t / 2;
+                    const uint32_t base_ptr = cb_k_start_address;
+                    for (uint32_t row = 0; row < half_Sk; ++row) {
+                        uint32_t write_ptr = base_ptr + row * k_tile_bytes;
+                        for (uint32_t col = 0; col < DHt; ++col) {
+                            local_k_generator.maybe_read_tile(
+                                nb, nk, k_slice.d2_start + row, col, end_seq_tile, write_ptr);
+                            write_ptr += Sk_chunk_t * k_tile_bytes;
+                        }
+                    }
+                    noc_async_read_barrier();  // Wait for reader's upper-half reads on NOC0
+
+                    // Wait for writer's lower-half completion signal
+                    noc_semaphore_wait(k_prefetch_semaphore_addr_ptr, 1);
+
+                    cb_push_back(cb_k_in, k_chunk_tiles);  // All tiles now in CB
+                } else if (should_receive) {
                     // Receive forwarded K chunk from previous core
                     noc_semaphore_set(receiver_semaphore_addr_ptr, INVALID);
                     noc_semaphore_inc(sender_semaphore_noc_addr, 1);

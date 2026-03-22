@@ -361,6 +361,9 @@ void kernel_main() {
     constexpr auto out_args = TensorAccessorArgs<28>();
     constexpr auto joint_out_args = TensorAccessorArgs<out_args.next_compile_time_args_offset()>();
     constexpr auto stats_args = TensorAccessorArgs<joint_out_args.next_compile_time_args_offset()>();
+    constexpr auto k_prefetch_args = TensorAccessorArgs<stats_args.next_compile_time_args_offset()>();  // K prefetch
+    constexpr uint32_t k_prefetch_semaphore_id =
+        get_compile_time_arg_val(k_prefetch_args.next_compile_time_args_offset());
 
     uint32_t argidx = 0;
     const uint32_t out_addr = get_arg_val<uint32_t>(argidx++);
@@ -368,6 +371,7 @@ void kernel_main() {
     const uint32_t stats_addr = get_arg_val<uint32_t>(argidx++);
     const uint32_t global_q_start = get_arg_val<uint32_t>(argidx++);
     const uint32_t global_q_end = get_arg_val<uint32_t>(argidx++);
+    const uint32_t k_prefetch_addr = get_arg_val<uint32_t>(argidx++);  // K prefetch DRAM address
 
     RingSDPAOpReceiver fused_op_receiver = RingSDPAOpReceiver(
         false, /* wait_for_op_signal */
@@ -400,6 +404,35 @@ void kernel_main() {
     const auto out_generator = PaddedAddrGenerator(out_writer, output_tile_logical);
     const auto joint_out_generator = PaddedAddrGenerator(joint_out_writer, joint_tile_logical);
 
+    // --- K prefetch: issue non-blocking DRAM reads for lower half of first K chunk on NOC1 ---
+    // Reads fly during scalar/mask generation below, hiding DRAM latency for the cold start.
+    if constexpr (use_streaming_compute) {
+        constexpr uint32_t cb_k_in = tt::CBIndex::c_1;
+        constexpr uint32_t k_tile_bytes = get_tile_size(cb_k_in);
+        constexpr uint32_t half_Sk = Sk_chunk_t / 2;
+        constexpr uint32_t q_heads_per_k = NH / NHK;
+
+        const auto k_prefetch_reader = TensorAccessor(k_prefetch_args, k_prefetch_addr, k_tile_bytes);
+        const auto k_prefetch_tile_logical = TensorTileShape(B, NHK, local_padded_Nt, DHt);
+        const auto k_prefetch_generator = PaddedAddrGenerator(k_prefetch_reader, k_prefetch_tile_logical);
+
+        // First Q chunk for this core: compute K tensor coordinates
+        const uint32_t first_nb = global_q_start / (NH * num_q_chunks);
+        const uint32_t first_nk = ((global_q_start % (NH * num_q_chunks)) / num_q_chunks) / q_heads_per_k;
+
+        // Write into cb_k_in's L1 buffer using transposed layout (same as read_block transpose=true)
+        // Tile (row, col) → base_ptr + row * k_tile_bytes + col * Sk_chunk_t * k_tile_bytes
+        const uint32_t base_ptr = get_write_ptr(cb_k_in);
+        for (uint32_t row = half_Sk; row < Sk_chunk_t; ++row) {
+            uint32_t write_ptr = base_ptr + row * k_tile_bytes;
+            for (uint32_t col = 0; col < DHt; ++col) {
+                k_prefetch_generator.maybe_read_tile(first_nb, first_nk, row, col, local_padded_Nt, write_ptr);
+                write_ptr += Sk_chunk_t * k_tile_bytes;
+            }
+        }
+        // Reads are in flight on NOC1 — barrier deferred until after scalar/mask gen
+    }
+
     constexpr uint32_t cb_scale_in = tt::CBIndex::c_4;
     constexpr uint32_t cb_col_identity = tt::CBIndex::c_8;
     constexpr uint32_t cb_identity_scale_in = tt::CBIndex::c_5;
@@ -416,6 +449,15 @@ void kernel_main() {
     constexpr bool needs_lightweight_mask = (local_n_has_padding || global_n_has_padding || joint_has_padding) && !is_causal;
     if constexpr (needs_lightweight_mask) {
         generate_lightweight_mask_tiles<global_n_partial_col, joint_l_partial_col, cb_mask_in>();
+    }
+
+    // --- K prefetch: barrier and signal reader that lower half is ready ---
+    if constexpr (use_streaming_compute) {
+        noc_async_read_barrier();  // Wait for lower-half K reads on NOC1
+        // Signal reader on the same core via local L1 semaphore write
+        volatile tt_l1_ptr uint32_t* k_prefetch_sem_ptr =
+            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_semaphore(k_prefetch_semaphore_id));
+        *k_prefetch_sem_ptr = 1;
     }
 
     const uint32_t last_active_ring_iter =

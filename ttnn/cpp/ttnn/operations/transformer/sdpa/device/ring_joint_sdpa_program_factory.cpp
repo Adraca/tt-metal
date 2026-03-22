@@ -426,6 +426,7 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
     auto sender_semaphore_id = CreateSemaphore(program, core_grid, INVALID);
     auto receiver_semaphore_id = CreateSemaphore(program, core_grid, INVALID);
     auto valid_semaphore_id = CreateSemaphore(program, core_grid, VALID);
+    auto k_prefetch_semaphore_id = CreateSemaphore(program, core_grid, 0);  // writer→reader K prefetch signal
 
     // Append semaphore ids to reader compile-time args (must match reader kernel expectations)
     const auto sem_args_offset = reader_compile_time_args.size();
@@ -433,6 +434,7 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
     reader_compile_time_args.push_back(receiver_semaphore_id);
     reader_compile_time_args.push_back(valid_semaphore_id);
     reader_compile_time_args.push_back(0);  // mcast_enabled placeholder (patched after chain construction)
+    reader_compile_time_args.push_back(k_prefetch_semaphore_id);  // K prefetch signal from writer
 
     std::vector<uint32_t> writer_compile_time_args = {
         B,
@@ -468,6 +470,8 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
     TensorAccessorArgs(output_tensor.buffer()).append_to(writer_compile_time_args);
     TensorAccessorArgs(joint_output_tensor.buffer()).append_to(writer_compile_time_args);
     TensorAccessorArgs(stats_output_tensor.buffer()).append_to(writer_compile_time_args);
+    TensorAccessorArgs(input_tensor_k.buffer()).append_to(writer_compile_time_args);  // K prefetch
+    writer_compile_time_args.push_back(k_prefetch_semaphore_id);                      // K prefetch signal to reader
 
     // Early format check: when all data formats are identical, reconfig calls can be skipped.
     const tt::DataFormat q_df_early = tt::tt_metal::datatype_to_dataformat_converter(input_tensor_q.dtype());
@@ -1167,6 +1171,15 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
         reader_args.push_back(chain.mcast_num_dests);
         reader_args.push_back(chain.mcast_sender_wait);
 
+        // Determine if this core's first K chunk on ring_iter=0 comes from DRAM (not chain receive).
+        // should_receive = participates && !is_injector && (nb == chain_batch && nq == chain_head)
+        const uint32_t first_nb = global_q_start / (NH * num_q_chunks);
+        const uint32_t first_nq = (global_q_start % (NH * num_q_chunks)) / num_q_chunks;
+        const bool first_q_receives_from_chain =
+            chain.participates && !chain.is_injector && (first_nb == chain.batch && first_nq == chain.head);
+        const bool split_first_k = use_streaming_compute && !first_q_receives_from_chain;
+        reader_args.push_back(static_cast<uint32_t>(split_first_k));  // K prefetch split flag
+
         // Inject fused-op synchronization RT args (AllGather) here; it will append to reader_args
         sdpa_fused_op_signaler->push_ring_sdpa_fused_op_rt_args(reader_args);
 
@@ -1179,6 +1192,7 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
             stats_addr,
             global_q_start,
             global_q_end,
+            k_addr,  // K prefetch: DRAM base address for local K tensor
         };
         sdpa_fused_op_signaler->push_ring_sdpa_fused_op_rt_args(writer_args);
         SetRuntimeArgs(program, writer_kernels_id, core, writer_args);
@@ -1296,6 +1310,7 @@ void RingJointSDPAProgramFactory::override_runtime_arguments(
             writer_args[0] = out_addr;
             writer_args[1] = joint_out_addr;
             writer_args[2] = stats_addr;
+            writer_args[5] = k_addr;  // K prefetch DRAM address
         }
     }
 }
