@@ -135,9 +135,12 @@ void complete_restore(
 // Three transaction IDs for fine-grained write barrier tracking.
 // Q[0] → TRID_FIRST, Q[1..N-2] → TRID_INNER, Q[N-1] → TRID_LAST.
 // Each barrier waits for a save that completed at least one full K-loop ago.
-constexpr uint32_t TRID_FIRST = 0;
-constexpr uint32_t TRID_INNER = 1;
-constexpr uint32_t TRID_LAST = 2;
+// Start from 1 — TRID 0 is the default for all NOC writes and must not be used
+// for per-TRID barriers, as unrelated writes (e.g. write_out_row_by_row on last
+// ring iter) would inflate the outstanding count and stall the barrier.
+constexpr uint32_t TRID_FIRST = 1;
+constexpr uint32_t TRID_INNER = 2;
+constexpr uint32_t TRID_LAST = 3;
 
 // Row-by-row drain of output tiles from cb_out to DRAM.
 // Waits for each row group (sbh tile-rows), writes to DRAM, pops.
@@ -217,6 +220,10 @@ void save_accumulators_with_trid(
     }
 
     noc_async_write_flushed_with_trid(save_trid);
+    // Reset TRID to 0 to avoid leaking it to unrelated writes (e.g. write_out_row_by_row on last ring iter).
+    // Without this, subsequent noc_async_write calls would inflate save_trid's outstanding count,
+    // causing noc_async_write_barrier_with_trid(save_trid) to wait for unrelated writes.
+    noc_async_write_set_trid(0);
     cb_pop_front(cb_max_out, Sq_chunk_t);
     cb_pop_front(cb_sum_out, Sq_chunk_t);
 }
