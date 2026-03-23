@@ -335,6 +335,7 @@ class Model:
         user_id=0,
         sampling_on_device=False,
         batch_size=1,
+        skip_lm_head=False,
     ):
         """
         Shared forward pass through decoder layers and final projection.
@@ -389,6 +390,9 @@ class Model:
                 logits.deallocate(True)
                 logits = logits_sliced
             hidden_states = logits
+
+        if skip_lm_head:
+            return hidden_states
 
         # Final norm and lm_head
         hidden_states = self.norm(hidden_states)
@@ -464,6 +468,7 @@ class Model:
         get_last_token=-1,
         kv_cache=None,
         batch_size=1,
+        skip_lm_head=False,
     ):
         """Prefill forward pass - processes full sequences"""
         # Use provided rotation matrices or slice from rope_setup (matches tt-transformers)
@@ -488,6 +493,7 @@ class Model:
             is_decode=False,
             user_id=user_id,
             batch_size=batch_size,
+            skip_lm_head=skip_lm_head,
         )
 
         return logits
