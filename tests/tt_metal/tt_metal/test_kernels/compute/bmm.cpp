@@ -54,17 +54,13 @@ void kernel_main() {
 #endif
             for (uint32_t nt_C = 0; nt_C < Nt; ++nt_C)  // output tile index of C
             {
-#ifdef ARCH_QUASAR
-            if (nt_C % THREADING != compute_id) {
-                continue;
-            }
-#endif
                 acquire_dst();
                 for (uint32_t kt = 0; kt < Kt; kt++) {
 #ifdef ARCH_QUASAR
-                    MATH(DPRINT << "mt_C: " << mt_C << " nt_C: " << nt_C << " kt: " << kt << ENDL());
+                    UNPACK(DPRINT << "mt_C: " << mt_C << " nt_C: " << nt_C << " kt: " << kt << ENDL());
                     dfb0.wait_front(onetile);
                     dfb1.wait_front(onetile);
+                    MATH(DPRINT << "mt_C: " << mt_C << " nt_C: " << nt_C << " kt: " << kt << ENDL());
                     matmul_tiles(dfb0.get_id(), dfb1.get_id(), 0, 0, 0);
                     dfb0.pop_front(onetile);
                     dfb1.pop_front(onetile);
@@ -80,7 +76,8 @@ void kernel_main() {
                 }
 
 #ifdef ARCH_QUASAR
-                    MATH(DPRINT << "mt_C: " << mt_C << " nt_C: " << nt_C << " reserve_back: dfb_out" << ENDL());
+
+                    PACK(DPRINT << "mt_C: " << mt_C << " nt_C: " << nt_C << " reserve_back: dfb_out" << ENDL());
                     dfb_out.reserve_back(onetile);
                     pack_tile(0, dfb_out.get_id());
                     dfb_out.push_back(onetile);

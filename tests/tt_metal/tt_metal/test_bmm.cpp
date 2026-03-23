@@ -66,7 +66,7 @@ TEST_F(MeshDeviceSingleCardFixture, Bmm) {
     std::vector<uint32_t> writer_compile_time_args;
     TensorAccessorArgs(dst_dram_buffer).append_to(writer_compile_time_args);
 
-    uint32_t THREADING = 1;
+    uint32_t THREADING = 2;
     vector<uint32_t> compute_kernel_args = {B, Mt, Kt, Nt, THREADING};
     KernelHandle reader;
     KernelHandle writer;
@@ -121,8 +121,8 @@ TEST_F(MeshDeviceSingleCardFixture, Bmm) {
             core,
             ComputeConfig{.compile_args = compute_kernel_args});
     } else {
-        uint32_t num_input_tiles = 2;
-        uint32_t num_output_tiles = 2;
+        uint32_t num_input_tiles = 4;
+        uint32_t num_output_tiles = 4;
 
         tt_metal::experimental::dfb::DataflowBufferConfig src0_dfb_config = {
             .entry_size = single_tile_size,

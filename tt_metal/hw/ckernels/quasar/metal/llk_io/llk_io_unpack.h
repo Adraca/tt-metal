@@ -35,7 +35,9 @@ inline void llk_pop_tiles(const std::int32_t dfb_id, const std::int32_t num_tile
 
     // Wait until selected unpackers are reading from L1
     TT_POP_TILES(UNPACK_SEL, num_tiles, tc_id);
-    DPRINT << "llk_pop_tiles: dfb_id " << dfb_id << "tc_id: " << tc_id << ENDL();
+    DPRINT << "llk_pop_tiles: dfb_id " << dfb_id << " tc_id: " << tc_id << ENDL();
+
+    DPRINT << "acked " << static_cast<uint32_t>(ckernel::trisc::tile_counters[tc_id].f.acked) << " posted " << static_cast<uint32_t>(ckernel::trisc::tile_counters[tc_id].f.posted) << ENDL();
 
     // Update the DFB buffer information
     const std::uint32_t num_words = num_tiles * local_dfb_interface.stride_size;
