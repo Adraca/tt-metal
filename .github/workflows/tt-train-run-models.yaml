@@ -96,6 +96,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           # We shouldn't need this once tt-train python build is stable
+          pip list
           pip install "gitpython==3.1.41" "pydantic==2.9.2" "numpy>=1.24.4,<2" "pyyaml>=5.4"
 
       - name: ${{ matrix.test-group.name }} tests
