@@ -438,7 +438,7 @@ void kernel_main() {
             const bool is_last_ring_iter = (ring_iter == last_active_ring_iter);
             const bool single_q_chunk = (global_q_end - global_q_start == 1);
 
-            for (uint32_t q_iter = 0; q_iter < (global_q_end - global_q_start); ++q_iter) {
+            for (uint32_t q_iter = 0; q_iter + global_q_start < global_q_end; ++q_iter) {
                 // Linear flat index for this iteration
                 uint32_t linear_flat = global_q_start + q_iter;
 
