@@ -174,15 +174,15 @@ SystemMemoryManager::SystemMemoryManager(ContextId context_id, ChipId device_id,
             CoreCoord(completion_queue_writer_core.x, completion_queue_writer_core.y),
             core_type);
 
-        const std::tuple<uint32_t, uint32_t> completion_interface_tlb_data = ctx.get_cluster()
-                                                                                 .get_tlb_data(tt_cxy_pair(
-                                                                                     completion_queue_writer_core.chip,
-                                                                                     completion_queue_writer_virtual.x,
-                                                                                     completion_queue_writer_virtual.y))
-                                                                                 .value();
-        auto [completion_tlb_offset, completion_tlb_size] = completion_interface_tlb_data;
+        // const std::tuple<uint32_t, uint32_t> completion_interface_tlb_data = ctx.get_cluster()
+        //                                                                          .get_tlb_data(tt_cxy_pair(
+        //                                                                              completion_queue_writer_core.chip,
+        //                                                                              completion_queue_writer_virtual.x,
+        //                                                                              completion_queue_writer_virtual.y))
+        //                                                                          .value();
+        // auto [completion_tlb_offset, completion_tlb_size] = completion_interface_tlb_data;
 
-        this->completion_byte_addrs[cq_id] = completion_q_rd_ptr % completion_tlb_size;
+        this->completion_byte_addrs[cq_id] = completion_q_rd_ptr;
         this->completion_q_windows.emplace_back(
             ctx.get_cluster().get_static_tlb_window(tt_cxy_pair(
                 completion_queue_writer_core.chip,
