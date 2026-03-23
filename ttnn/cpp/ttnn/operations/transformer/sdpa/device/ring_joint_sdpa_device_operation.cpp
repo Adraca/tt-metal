@@ -375,6 +375,11 @@ RingJointSDPAResult ring_joint_scaled_dot_product_attention(
     auto kernel_config_val = init_device_compute_kernel_config(
         input_tensor_q.device()->arch(), compute_kernel_config, MathFidelity::HiFi2, true, false, false);
 
+    log_info(
+        tt::LogOp,
+        "Launching RingJointSDPA with core_allocation_strategy {}",
+        enchantum::to_string(core_allocation_strategy));
+
     /**
      * Create RingAttentionAllGatherAsync struct.
      * It will be a member of the RingJointScaledDotProductAttention struct.

@@ -411,7 +411,7 @@ def run_ring_joint_sdpa(
     ],
     ids=["no_trace"],
 )
-@pytest.mark.parametrize("num_links", [1], ids=["1link"])
+@pytest.mark.parametrize("num_links", [2], ids=["2links"])
 @pytest.mark.parametrize(
     "device_params, all_gather_topology",
     [
