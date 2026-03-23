@@ -11,13 +11,20 @@ from transformers.configuration_utils import PretrainedConfig
 
 import ttnn
 from models.demos.deepseek_v3.utils.abstract_module import AbstractModule
-from models.demos.deepseek_v3.utils.config_dataclass import FromWeightConfig, LinearConfig, MeshDeviceStub, MulConfig
+from models.demos.deepseek_v3.utils.config_dataclass import (
+    FromWeightConfig,
+    LinearConfig,
+    MeshDeviceStub,
+    MulConfig,
+    SavedWeight,
+)
 from models.demos.deepseek_v3.utils.config_helpers import (
     COMPUTE_KERNEL_CONFIG_HIFI2,
     COMPUTE_KERNEL_CONFIG_LOFI,
+    TENSOR_CACHE_EXTENSION,
+    _get_relative_cache_path,
     even_int_div,
     get_dequantized_tensor,
-    shard_and_save,
 )
 from models.demos.deepseek_v3.utils.run_config import (
     ModelDecodeConfig,
@@ -26,6 +33,30 @@ from models.demos.deepseek_v3.utils.run_config import (
     RunPrefillConfig,
     WeightConfig,
 )
+
+
+def _dump_host_sharded_weight(
+    path: Path,
+    host_shards: list[ttnn.Tensor],
+    mesh_device: ttnn.Device,
+    memory_config: ttnn.MemoryConfig,
+) -> SavedWeight:
+    mesh_shape = mesh_device.shape
+    if not isinstance(mesh_shape, ttnn.MeshShape):
+        mesh_shape = ttnn.MeshShape(*mesh_shape)
+
+    multi_device_tensor = ttnn.from_host_shards(host_shards, mesh_shape)
+
+    if not path.name.endswith(TENSOR_CACHE_EXTENSION):
+        path = path.with_name(f"{path.name}{TENSOR_CACHE_EXTENSION}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ttnn.dump_tensor(path, multi_device_tensor)
+
+    relative_cache_path = _get_relative_cache_path(path)
+    if relative_cache_path is None:
+        raise ValueError(f"Expected path under a 'mesh_<rows>x<cols>' cache directory: {path}")
+
+    return SavedWeight(Path(relative_cache_path), memory_config)
 
 
 class Experts(AbstractModule):
@@ -53,26 +84,57 @@ class Experts(AbstractModule):
         (state_dict,) = state_dicts
         assert state_dict is not None
 
-        def _load_expert_weight(hf_name: str) -> torch.Tensor:
+        experts_per_device = cls._get_num_experts_per_device(hf_config, mesh_device)
+
+        def _evict_key_if_possible(key: str) -> None:
+            evict = getattr(state_dict, "evict", None)
+            if callable(evict):
+                evict(key)
+
+        def _load_expert_shard(hf_name: str, expert_start: int) -> torch.Tensor:
             weight_name = f"{hf_name}.weight"
             expert_weights: list[torch.Tensor] = []
-            for expert_id in range(hf_config.n_routed_experts):
+            loaded_keys: list[str] = []
+            for expert_id in range(expert_start, expert_start + experts_per_device):
                 full_weight_name = f"experts.{expert_id}.{weight_name}"
                 expert_weights.append(
                     get_dequantized_tensor(state_dict, full_weight_name, dtype=cls.WEIGHT_TORCH_DTYPE)
                 )
+                loaded_keys.append(full_weight_name)
 
-            return torch.stack(expert_weights)
+            shard = torch.stack(expert_weights).unsqueeze(0).transpose(-1, -2).contiguous()
+            del expert_weights
+            for key in loaded_keys:
+                _evict_key_if_possible(key)
+            return shard
+
+        def _save_projection_shards(hf_name: str, ttnn_name: str, dtype: ttnn.DataType) -> SavedWeight:
+            layout = ttnn.TILE_LAYOUT if dtype in {ttnn.bfloat4_b, ttnn.bfloat8_b} else None
+            host_shards: list[ttnn.Tensor] = []
+
+            for expert_start in range(0, hf_config.n_routed_experts, experts_per_device):
+                host_shards.append(
+                    ttnn.from_torch(
+                        _load_expert_shard(hf_name, expert_start),
+                        dtype=dtype,
+                        layout=layout,
+                        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    )
+                )
+
+            return _dump_host_sharded_weight(
+                output_path / f"{ttnn_name}.input_tensor_b",
+                host_shards,
+                mesh_device,
+                ttnn.DRAM_MEMORY_CONFIG,
+            )
 
         return {
             ttnn_name: {
-                "input_tensor_b": shard_and_save(
-                    output_path / f"{ttnn_name}.input_tensor_b",
-                    _load_expert_weight(hf_name).unsqueeze(0).transpose(-1, -2),
-                    shard_dims=(1, 1),
-                    mesh_device=mesh_device,
-                    dtype=ttnn.bfloat8_b if hf_name == "down_proj" else ttnn.bfloat4_b,
-                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                "input_tensor_b": _save_projection_shards(
+                    hf_name,
+                    ttnn_name,
+                    ttnn.bfloat8_b if hf_name == "down_proj" else ttnn.bfloat4_b,
                 )
             }
             for hf_name, ttnn_name in [

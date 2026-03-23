@@ -15,7 +15,6 @@ from loguru import logger
 
 import ttnn
 from models.demos.deepseek_v3.utils.config_dataclass import DeepseekSamplingArgs, SavedWeight
-from models.demos.deepseek_v3.utils.lazy_state_dict import LazyStateDict
 
 # Constants
 NORM_CATEGORIES = {"attention_norm", "mlp_norm", "q_norm", "k_norm"}
@@ -593,8 +592,9 @@ def get_state_dicts(
 
 def sub_state_dict(state_dict: dict[str, torch.Tensor], prefix: str, num_layers: int | None = None):
     """Get a subset of the state dict with a given prefix."""
-    # Preserve laziness when applicable by returning a LazyStateDict view.
-    if isinstance(state_dict, LazyStateDict):
+    # Preserve laziness when applicable by returning a lightweight view instead
+    # of iterating the full mapping into a materialized dict.
+    if hasattr(state_dict, "view_with_prefix"):
         return state_dict.view_with_prefix(prefix, num_layers)
     if num_layers is None:
         return {k[len(prefix) :]: v for k, v in state_dict.items() if k.startswith(prefix)}

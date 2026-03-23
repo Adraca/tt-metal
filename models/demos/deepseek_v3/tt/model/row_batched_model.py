@@ -61,44 +61,60 @@ class RowBatchedModel(SharedStateAddOn, AbstractModule):
         ), "Number of non-MoE blocks cannot be greater than the total number of blocks."
         (state_dict,) = state_dicts
 
+        def _clear_state_dict_cache() -> None:
+            clear_cache = getattr(state_dict, "clear_cache", None)
+            if callable(clear_cache):
+                clear_cache()
+
         weight_cfg: dict[str, WeightConfig] = {
             "embedding": Embedding2D.convert_weights(
                 hf_config, (sub_state_dict(state_dict, "model.embed_tokens."),), output_path / "embedding", mesh_device
             ),
-            "mlp_decoder_block": [
+        }
+        _clear_state_dict_cache()
+
+        weight_cfg["mlp_decoder_block"] = []
+        for layer_idx in tqdm(
+            range(hf_config.first_k_dense_replace),
+            desc="Converting MLP layers",
+        ):
+            weight_cfg["mlp_decoder_block"].append(
                 DecoderBlock2D.convert_weights(
                     hf_config,
                     (sub_state_dict(state_dict, f"model.layers.{layer_idx}."),),
                     output_path / f"mlp_decoder_block_{layer_idx}",
                     mesh_device,
                 )
-                for layer_idx in tqdm(
-                    range(hf_config.first_k_dense_replace),
-                    desc="Converting MLP layers",
-                )
-            ],
-            "moe_decoder_block": [
+            )
+            _clear_state_dict_cache()
+
+        weight_cfg["moe_decoder_block"] = []
+        for layer_idx in tqdm(
+            range(hf_config.first_k_dense_replace, hf_config.num_hidden_layers),
+            desc="Converting MoE layers",
+        ):
+            weight_cfg["moe_decoder_block"].append(
                 MoEDecoderBlock2D.convert_weights(
                     hf_config,
                     (sub_state_dict(state_dict, f"model.layers.{layer_idx}."),),
                     output_path / f"moe_decoder_block_{layer_idx}",
                     mesh_device,
                 )
-                for layer_idx in tqdm(
-                    range(hf_config.first_k_dense_replace, hf_config.num_hidden_layers),
-                    desc="Converting MoE layers",
-                )
-            ],
-            "norm": DistributedRMSNorm.convert_weights(
-                hf_config,
-                [sub_state_dict(state_dict, "model.norm.")] * mesh_device.shape[0],
-                output_path / "norm",
-                mesh_device,
-            ),
-            "lm_head": LMHead1D.convert_weights(
-                hf_config, [sub_state_dict(state_dict, "lm_head.")], output_path / "lm_head", mesh_device
-            ),
-        }
+            )
+            _clear_state_dict_cache()
+
+        weight_cfg["norm"] = DistributedRMSNorm.convert_weights(
+            hf_config,
+            [sub_state_dict(state_dict, "model.norm.")] * mesh_device.shape[0],
+            output_path / "norm",
+            mesh_device,
+        )
+        _clear_state_dict_cache()
+
+        weight_cfg["lm_head"] = LMHead1D.convert_weights(
+            hf_config, [sub_state_dict(state_dict, "lm_head.")], output_path / "lm_head", mesh_device
+        )
+        _clear_state_dict_cache()
         mtp_layer_idx = hf_config.num_hidden_layers
         mtp_layer_prefix = f"model.layers.{mtp_layer_idx}."
         if cls._has_mtp_layer(hf_config) and f"{mtp_layer_prefix}eh_proj.weight" in state_dict:
@@ -108,6 +124,7 @@ class RowBatchedModel(SharedStateAddOn, AbstractModule):
                 output_path / "mtp",
                 mesh_device,
             )
+            _clear_state_dict_cache()
         return weight_cfg
 
     @classmethod
