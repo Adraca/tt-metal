@@ -31,20 +31,27 @@
  * This works for ANY division of work across cores (no exact division constraint).
  */
 FORCE_INLINE uint32_t linear_to_zigzag(uint32_t linear_flat, uint32_t num_q_chunks) {
-    return linear_flat;
+    uint32_t zigzag = linear_flat;
 
-    // const uint32_t head_idx = linear_flat / num_q_chunks;
-    // const uint32_t pos_in_head = linear_flat % num_q_chunks;
+    const uint32_t head_idx = linear_flat / num_q_chunks;
+    const uint32_t pos_in_head = linear_flat % num_q_chunks;
 
-    // uint32_t q_chunk;
-    // if (pos_in_head % 2 == 0) {
-    //     // Even positions: forward from start
-    //     q_chunk = pos_in_head / 2;
-    // } else {
-    //     // Odd positions: backward from end
-    //     q_chunk = num_q_chunks - 1 - (pos_in_head / 2);
-    // }
-    // return head_idx * num_q_chunks + q_chunk;
+    uint32_t q_chunk;
+    if (pos_in_head % 2 == 0) {
+        // Even positions: forward from start
+        q_chunk = pos_in_head / 2;
+    } else {
+        // Odd positions: backward from end
+        q_chunk = num_q_chunks - 1 - (pos_in_head / 2);
+    }
+
+    DPRINT << "DATAFLOW: linear [" << head_idx << ":" << pos_in_head << "] -> zigzag [" << head_idx << ":" << q_chunk
+           << "]" << ENDL();
+
+    zigzag = head_idx * num_q_chunks + q_chunk;
+
+    DPRINT << "DATAFLOW: linear " << linear_flat << " -> zigzag " << zigzag << ENDL();
+    return zigzag;
 }
 
 template <uint32_t tile_bytes, uint32_t num_readers>
@@ -938,8 +945,8 @@ struct PaddedAddrGenerator {
 };
 
 struct Slice {
-    uint32_t d0;        // batch dimension
-    uint32_t d1;        // head dimension
+    uint32_t d0;  // batch dimension
+    uint32_t d1;  // head dimension
 
     uint32_t d2_start;  // sequence start
     uint32_t d2_end;    // sequence end
