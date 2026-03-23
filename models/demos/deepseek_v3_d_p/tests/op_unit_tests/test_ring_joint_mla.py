@@ -112,11 +112,13 @@ def run_ring_joint_sdpa(
     is_balanced=False,
 ):
     full_compute_grid = submesh.compute_with_storage_grid_size()
-    logger.info(f"Full grid: x {full_compute_grid.x} * y {full_compute_grid.y}")
+    logger.info(f"Full grid: x {full_compute_grid.x} * y {full_compute_grid.y}")  # 13x10
+
     available_compute_grid = (12, 10)  # Set a fixed available compute grid for testing
     logger.warning(f"Using grid: x {available_compute_grid[0]} * y {available_compute_grid[1]}")
-    sdpa_compute_grid = (available_compute_grid[0], available_compute_grid[1] - 1)
-    ccl_core_grid_offset = (0, available_compute_grid[1] - 1)
+
+    sdpa_compute_grid = (available_compute_grid[0] - 1, available_compute_grid[1])
+    ccl_core_grid_offset = (available_compute_grid[0] - 1, 0)  # col, row
 
     # Basic CCL setup
     ccl_sub_device_crs = ttnn.CoreRangeSet(
@@ -327,6 +329,7 @@ def run_ring_joint_sdpa(
                 topology=all_gather_topology,
                 subdevice_id=worker_sub_device_id,
                 ccl_core_grid_offset=ccl_core_grid_offset,
+                use_column_major_ccl=True,
                 is_causal=is_causal,
                 is_balanced=is_balanced,
             )
