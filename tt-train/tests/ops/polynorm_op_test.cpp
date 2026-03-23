@@ -16,9 +16,8 @@
 
 #include "autograd/auto_context.hpp"
 #include "core/random.hpp"
-#include "core/system_utils.hpp"
 #include "core/tt_tensor_utils.hpp"
-#include "ops/losses.hpp"
+#include "metal/ops/polynorm_bw/polynorm_bw.hpp"
 
 class PolyNormOpTest : public ::testing::Test {
 protected:
@@ -203,6 +202,45 @@ PolyNormCaseData make_case_data(const std::vector<uint32_t>& input_shape) {
     return data;
 }
 
+enum class BackwardKernelVariant {
+    TwoKernel,
+    FusedPartials,
+};
+
+std::string backward_variant_name(BackwardKernelVariant variant) {
+    if (variant == BackwardKernelVariant::FusedPartials) {
+        return "fused_partials";
+    }
+    return "two_kernel";
+}
+
+std::tuple<xt::xarray<float>, xt::xarray<float>, xt::xarray<float>> run_backward_kernel_variant(
+    BackwardKernelVariant variant,
+    const xt::xarray<float>& input,
+    const xt::xarray<float>& dL_dout,
+    const xt::xarray<float>& weight,
+    float epsilon,
+    ttnn::distributed::MeshDevice* device) {
+    const float w0 = weight(0, 0, 0, 0);
+    const float w1 = weight(0, 0, 0, 1);
+    const float w2 = weight(0, 0, 0, 2);
+
+    const auto input_tensor = ttml::core::from_xtensor(input, device);
+    const auto dL_dout_tensor = ttml::core::from_xtensor(dL_dout, device);
+
+    std::tuple<ttnn::Tensor, ttnn::Tensor, ttnn::Tensor> outputs;
+    if (variant == BackwardKernelVariant::FusedPartials) {
+        outputs = ttml::metal::polynorm_bw_full_fused_partials(input_tensor, dL_dout_tensor, w0, w1, w2, epsilon);
+    } else {
+        outputs = ttml::metal::polynorm_bw_full(input_tensor, dL_dout_tensor, w0, w1, w2, epsilon);
+    }
+
+    return {
+        ttml::core::to_xtensor(std::get<0>(outputs)),
+        ttml::core::to_xtensor(std::get<1>(outputs)),
+        ttml::core::to_xtensor(std::get<2>(outputs))};
+}
+
 void expect_allclose_with_metrics(
     const xt::xarray<float>& out_tt,
     const xt::xarray<float>& out_ref,
@@ -223,9 +261,9 @@ void CompareKernelVsReferenceWithShape(const std::vector<uint32_t>& shape, float
     const auto data = make_case_data(shape);
     auto* device = &autograd::ctx().get_device();
 
-    auto x = autograd::create_tensor(core::from_xtensor(data.input, device), /*requires_grad=*/true);
-    auto w = autograd::create_tensor(core::from_xtensor(data.weight, device), /*requires_grad=*/true);
-    auto b = autograd::create_tensor(core::from_xtensor(data.bias, device), /*requires_grad=*/true);
+    auto x = autograd::create_tensor(core::from_xtensor(data.input, device), /*requires_grad=*/false);
+    auto w = autograd::create_tensor(core::from_xtensor(data.weight, device), /*requires_grad=*/false);
+    auto b = autograd::create_tensor(core::from_xtensor(data.bias, device), /*requires_grad=*/false);
 
     auto out = ops::polynorm3(x, w, b, epsilon);
     const auto out_xt = core::to_xtensor(out->get_value());
@@ -236,27 +274,30 @@ void CompareKernelVsReferenceWithShape(const std::vector<uint32_t>& shape, float
     EXPECT_TRUE(xt::all(xt::isfinite(out_reference_xt)));
     expect_allclose_with_metrics(out_xt, out_reference_xt, 8.0e-2F, 8.0e-2F, "fused_forward_vs_xt_reference");
 
-    auto target = autograd::create_tensor(core::zeros_like(out->get_value()));
-    auto mse = ops::mse_loss(out, target);
-    mse->backward();
-
-    const auto grad_x = core::to_xtensor(x->get_grad());
-    const auto grad_w = core::to_xtensor(w->get_grad());
-    const auto grad_b = core::to_xtensor(b->get_grad());
-    const auto dL_dout = core::to_xtensor(out->get_grad());
+    const float inv_volume = 1.0F / static_cast<float>(out_xt.size());
+    const auto dL_dout = out_xt * (2.0F * inv_volume);  // d/dx mean((x - 0)^2)
     const auto [grad_x_ref, grad_w_ref, grad_b_ref] =
         polynorm_reference_backward(data.input, data.weight, dL_dout, epsilon);
 
-    EXPECT_EQ(grad_x.shape(), data.input.shape());
-    EXPECT_EQ(grad_w.shape(), data.weight.shape());
-    EXPECT_EQ(grad_b.shape(), data.bias.shape());
+    for (const auto variant : {BackwardKernelVariant::TwoKernel, BackwardKernelVariant::FusedPartials}) {
+        const auto [grad_x, grad_w, grad_b] =
+            run_backward_kernel_variant(variant, data.input, dL_dout, data.weight, epsilon, device);
+        const auto variant_name = backward_variant_name(variant);
 
-    EXPECT_TRUE(xt::all(xt::isfinite(grad_x)));
-    EXPECT_TRUE(xt::all(xt::isfinite(grad_w)));
-    EXPECT_TRUE(xt::all(xt::isfinite(grad_b)));
-    expect_allclose_with_metrics(grad_x, grad_x_ref, 1.0e-1F, 1.0e-1F, "backward_grad_x_vs_xt_reference");
-    expect_allclose_with_metrics(grad_w, grad_w_ref, 1.0e-1F, 1.0e-1F, "backward_grad_w_vs_xt_reference");
-    expect_allclose_with_metrics(grad_b, grad_b_ref, 1.0e-1F, 1.0e-1F, "backward_grad_b_vs_xt_reference");
+        EXPECT_EQ(grad_x.shape(), data.input.shape());
+        EXPECT_EQ(grad_w.shape(), data.weight.shape());
+        EXPECT_EQ(grad_b.shape(), data.bias.shape());
+
+        EXPECT_TRUE(xt::all(xt::isfinite(grad_x)));
+        EXPECT_TRUE(xt::all(xt::isfinite(grad_w)));
+        EXPECT_TRUE(xt::all(xt::isfinite(grad_b)));
+        expect_allclose_with_metrics(
+            grad_x, grad_x_ref, 1.0e-1F, 1.0e-1F, variant_name + "_backward_grad_x_vs_xt_reference");
+        expect_allclose_with_metrics(
+            grad_w, grad_w_ref, 1.0e-1F, 1.0e-1F, variant_name + "_backward_grad_w_vs_xt_reference");
+        expect_allclose_with_metrics(
+            grad_b, grad_b_ref, 1.0e-1F, 1.0e-1F, variant_name + "_backward_grad_b_vs_xt_reference");
+    }
 
     autograd::ctx().reset_graph();
 }
