@@ -49,6 +49,30 @@ template <uint32_t bits_per_step>
 FORCE_INLINE constexpr uint32_t step_semaphore_shift(uint32_t step) {
     return step * bits_per_step;
 }
+
+FORCE_INLINE void mask_last_chunk(
+    uint32_t cb_mask, uint32_t k_chunk_size, uint32_t cur_pos, uint32_t k_chunk_end, uint32_t k_num_chunks) {
+    bool mask_last_chunk = k_chunk_end == k_num_chunks && (cur_pos + 1) % k_chunk_size != 0;
+    if (mask_last_chunk) {
+        DeviceZoneScopedN("mask-last-chunk");
+        cb_reserve_back(cb_mask, 1);
+        volatile tt_l1_ptr uint32_t* mask_write_ptr =
+            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_write_ptr(cb_mask));
+        uint32_t num_unmasked = cur_pos % k_chunk_size + 1;
+        uint32_t i = 0;
+        for (; i < num_unmasked / 2; i++) {
+            *mask_write_ptr++ = 0x00000000;
+        }
+        if (num_unmasked % 2 == 1) {
+            *mask_write_ptr++ = 0xFF800000;
+            i++;
+        }
+        for (; i < k_chunk_size / 2; i++) {
+            *mask_write_ptr++ = 0xFF80FF80;
+        }
+        cb_push_back(cb_mask, 1);
+    }
+}
 #endif
 
 namespace deepseek_b1_ops {
@@ -374,6 +398,11 @@ struct FlashMLADecode {
             const bool is_output_core = args.is_output_core == 1;
             noc_async_write_set_trid(0, WRITE_NOC_INDEX);
 
+            uint32_t cur_pos = args.local_cur_pos;
+
+            auto [k_num_chunks, k_chunk_start, k_chunk_end] = get_runtime_args(
+                cur_pos, args.cur_batch, args.core_num_in_reduce, args.num_cores_per_head, args.k_chunk_size);
+
             {
                 DeviceZoneScopedN("reader-q-read");
                 if (is_output_core) {
@@ -388,6 +417,7 @@ struct FlashMLADecode {
                             args.q_input_mcast_semaphore_addr);
                         noc_semaphore_inc_multicast(
                             q_input_mcast_sem_noc_addr, 1, args.full_grid_mcast_num_dests, MCAST_NOC_INDEX);
+                        mask_last_chunk(args.cb_mask, args.k_chunk_size, cur_pos, k_chunk_end, k_num_chunks);
                         // This is needed because we need to wait for all transactions before resetting the trids
                         // Could move it later but don't think it makes much difference
                         noc_async_atomic_barrier(MCAST_NOC_INDEX);
@@ -398,51 +428,28 @@ struct FlashMLADecode {
                             args.q_input_mcast_semaphore_addr,
                             ATOMIC_NOC_INDEX);
                         noc_semaphore_inc(sender_receiver_ready_noc_addr, 1, ATOMIC_NOC_INDEX);
+                        mask_last_chunk(args.cb_mask, args.k_chunk_size, cur_pos, k_chunk_end, k_num_chunks);
                         noc_async_atomic_barrier(ATOMIC_NOC_INDEX);
                         noc_semaphore_wait(q_input_mcast_semaphore_ptr, 1);
                     }
+                } else if (k_chunk_start == k_chunk_end) {
+                    noc_semaphore_wait(q_input_mcast_semaphore_ptr, 1);
                 } else {
                     // wait for 8 q heads
-                    uint64_t q_noc_addr =
-                        get_noc_addr(args.output_core_noc_x, args.output_core_noc_y, get_read_ptr(args.cb_q_in));
+                    uint64_t q_noc_addr = get_noc_addr(
+                        args.output_core_noc_x, args.output_core_noc_y, get_read_ptr(args.cb_q_in), READ_NOC_INDEX);
                     cb_reserve_back(args.cb_q_in, q_chunk_tiles);
                     noc_semaphore_wait(q_input_mcast_semaphore_ptr, 1);
                     noc_async_read(q_noc_addr, get_write_ptr(args.cb_q_in), args.q_chunk_size_bytes, READ_NOC_INDEX);
+                    mask_last_chunk(args.cb_mask, args.k_chunk_size, cur_pos, k_chunk_end, k_num_chunks);
                     noc_async_read_barrier(READ_NOC_INDEX);
                     cb_push_back(args.cb_q_in, q_chunk_tiles);
                 }
                 noc_semaphore_set(q_input_mcast_semaphore_ptr, 0);
             }
 
-            uint32_t cur_pos = args.local_cur_pos;
-
-            auto [k_num_chunks, k_chunk_start, k_chunk_end] = get_runtime_args(
-                cur_pos, args.cur_batch, args.core_num_in_reduce, args.num_cores_per_head, args.k_chunk_size);
-
             if (k_chunk_start == k_chunk_end) {
                 return;
-            }
-            // Mask logic could be overlapped with the noc txns above, but currently DRAM reading fully overlaps with
-            // the mask logic
-            bool mask_last_chunk = k_chunk_end == k_num_chunks && (cur_pos + 1) % args.k_chunk_size != 0;
-            if (mask_last_chunk) {
-                DeviceZoneScopedN("mask-last-chunk");
-                cb_reserve_back(args.cb_mask, 1);
-                volatile tt_l1_ptr uint32_t* mask_write_ptr =
-                    reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_write_ptr(args.cb_mask));
-                uint32_t num_unmasked = cur_pos % args.k_chunk_size + 1;
-                uint32_t i = 0;
-                for (; i < num_unmasked / 2; i++) {
-                    *mask_write_ptr++ = 0x00000000;
-                }
-                if (num_unmasked % 2 == 1) {
-                    *mask_write_ptr++ = 0xFF800000;
-                    i++;
-                }
-                for (; i < args.k_chunk_size / 2; i++) {
-                    *mask_write_ptr++ = 0xFF80FF80;
-                }
-                cb_push_back(args.cb_mask, 1);
             }
 
             // =================================================================
@@ -608,11 +615,10 @@ struct FlashMLADecode {
             constexpr bool transpose_k = true;
             constexpr bool transpose_v = false;
 
-            PACK((llk_math_sfpu_sdpa_reduce_row_init<false, DST_ACCUM_MODE, DataFormat::Float16_b>()));
             reconfig_data_format<false, true>(cb_k_in, cb_q_in);
             pack_reconfig_data_format<true>(cb_out_o);
+            PACK((llk_math_sfpu_sdpa_reduce_row_init<false, DST_ACCUM_MODE, DataFormat::Float16_b>()));
             PACK(SFPU_TEMPLATE_INIT_KERNEL(exponential, sfpu::exp_init, true, true, scale_fp32, true));
-            sdpa_custom_mm_block_init_short<transpose_k>(cb_q_in, cb_k_in, cb_out_o, Sk_chunk_t);
 
             uint32_t cur_pos = args.local_cur_pos;
             auto [k_num_chunks, k_chunk_start, k_chunk_end] = get_runtime_args(
