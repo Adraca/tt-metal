@@ -214,3 +214,13 @@ TEST_F(PolyNormOpTest, NIGHTLY_PolyNorm_Compare_ProgressiveMedium) {
 TEST_F(PolyNormOpTest, NIGHTLY_PolyNorm_Compare_ProgressiveLarge) {
     CompareKernelVsReferenceWithShape({4, 1, 128, 768}, 1e-5F);
 }
+
+TEST_F(PolyNormOpTest, NIGHTLY_PolyNorm_Compare_NanoLlama3LikeChannelShape) {
+    // NanoLlama3 embedding_dim is 384; keep sequence moderate for xt reference runtime.
+    CompareKernelVsReferenceWithShape({1, 1, 64, 384}, 1e-5F);
+}
+
+TEST_F(PolyNormOpTest, NIGHTLY_PolyNorm_Compare_TinyLlamaLikeChannelShape) {
+    // TinyLlama/Llama1B-like embedding_dim is 2048; use shorter sequence for nightly stability.
+    CompareKernelVsReferenceWithShape({1, 1, 16, 2048}, 1e-5F);
+}

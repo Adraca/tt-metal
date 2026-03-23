@@ -4,9 +4,13 @@
 
 #include "llama_block.hpp"
 
+#include <vector>
+
 #include "autograd/auto_context.hpp"
+#include "core/tt_tensor_utils.hpp"
 #include "modules/grouped_query_attention.hpp"
 #include "ops/binary_ops.hpp"
+#include "ops/polynorm_op.hpp"
 #include "ops/rope_op.hpp"
 #include "ops/unary_ops.hpp"
 
@@ -24,16 +28,27 @@ LlamaMLP::LlamaMLP(uint32_t embedding_size, std::optional<uint32_t> intermediate
     m_w3 = std::make_shared<LinearLayer>(embedding_size, hidden_size, /*has_bias=*/false);
     m_w2 = std::make_shared<LinearLayer>(hidden_size, embedding_size, /*has_bias=*/false);
     m_dropout = std::make_shared<DropoutLayer>(dropout_prob);
+    m_polynorm_weight = autograd::create_tensor(
+        core::from_vector(
+            std::vector<float>{1.0F / 3.0F, 1.0F / 3.0F, 1.0F / 3.0F},
+            ttnn::Shape({1, 1, 1, 3}),
+            &autograd::ctx().get_device()),
+        /*requires_grad=*/true);
+    m_polynorm_bias = autograd::create_tensor(
+        core::from_vector(std::vector<float>{0.0F}, ttnn::Shape({1, 1, 1, 1}), &autograd::ctx().get_device()),
+        /*requires_grad=*/true);
 
     create_name("llama_mlp");
     register_module(m_w1, "w1");
     register_module(m_w3, "w3");
     register_module(m_w2, "w2");
     register_module(m_dropout, "dropout");
+    register_tensor(m_polynorm_weight, "polynorm_weight");
+    register_tensor(m_polynorm_bias, "polynorm_bias");
 }
 
 autograd::TensorPtr LlamaMLP::operator()(const autograd::TensorPtr& input) {
-    auto swished = ops::silu((*m_w1)(input));
+    auto swished = ops::polynorm3((*m_w1)(input), m_polynorm_weight, m_polynorm_bias);
     auto gate = (*m_w3)(input);
     auto gated = ops::mul(swished, gate);
     auto x = (*m_w2)(gated);

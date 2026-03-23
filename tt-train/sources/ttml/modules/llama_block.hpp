@@ -21,6 +21,8 @@ private:
     std::shared_ptr<LinearLayer> m_w3;
     std::shared_ptr<LinearLayer> m_w2;
     std::shared_ptr<DropoutLayer> m_dropout;
+    autograd::TensorPtr m_polynorm_weight;
+    autograd::TensorPtr m_polynorm_bias;
 
 public:
     LlamaMLP(uint32_t embedding_size, std::optional<uint32_t> intermediate_dim, float dropout_prob = 0.0F);
