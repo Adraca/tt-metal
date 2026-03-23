@@ -2,6 +2,7 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
 import torch
 import ttnn
 
@@ -51,3 +52,73 @@ def test_group_norm_large_ex_external_cb(device):
     )
     output_tensor = ttnn.to_torch(output_tensor_tt)
     assert_with_pcc(golden, output_tensor)
+
+
+# ---------------------------------------------------------------------------
+# Validation-failure tests for fatals added in PR #39330
+# ---------------------------------------------------------------------------
+
+
+class TestGroupNormValidationFailures:
+    """Device-based tests that trigger TT_FATAL / TT_THROW checks in
+    groupnorm.cpp and the program factories (groupnorm_*_program_factory.cpp).
+
+    These require a Tenstorrent device; for CPU-only helper tests see
+    tests/ttnn/nightly/unit_tests/operations_compute_only/fused/test_group_norm.py
+    """
+
+    def test_grid_too_large_for_height(self, device):
+        """Ht < num_virtual_rows must raise (validate_dram_grid TT_THROW).
+        Shape (1,1,32,256): NHW=32, Ht=1. Grid (8,8) gives num_virtual_rows=8."""
+        x = ttnn.from_torch(
+            torch.randn(1, 1, 32, 256, dtype=torch.bfloat16),
+            device=device,
+            layout=ttnn.TILE_LAYOUT,
+        )
+        with pytest.raises(RuntimeError, match="core_grid.*is invalid|Height in tiles"):
+            ttnn.group_norm(x, num_groups=32, core_grid=ttnn.CoreGrid(y=8, x=8), inplace=False)
+
+    def test_height_not_divisible_by_virtual_rows(self, device):
+        """Ht % num_virtual_rows != 0 must raise (validate_dram_grid TT_THROW).
+        Shape (1,1,3*32,256): NHW=96, Ht=3. Grid (8,2) with channels=256
+        gives nvc=8, rows_per_y=1, num_virtual_rows=2. 3%2!=0."""
+        x = ttnn.from_torch(
+            torch.randn(1, 1, 3 * 32, 256, dtype=torch.bfloat16),
+            device=device,
+            layout=ttnn.TILE_LAYOUT,
+        )
+        with pytest.raises(RuntimeError, match="core_grid.*is invalid|divisible by num_virtual_rows"):
+            ttnn.group_norm(x, num_groups=32, core_grid=ttnn.CoreGrid(y=2, x=8), inplace=False)
+
+    def test_channels_not_divisible_by_groups(self, device):
+        """num_channels % num_groups != 0 must raise (groupnorm.cpp TT_FATAL)."""
+        x = ttnn.from_torch(
+            torch.randn(1, 1, 32, 256, dtype=torch.bfloat16),
+            device=device,
+            layout=ttnn.TILE_LAYOUT,
+        )
+        with pytest.raises(RuntimeError, match="divisible by the number of groups"):
+            ttnn.group_norm(x, num_groups=7, core_grid=ttnn.CoreGrid(y=1, x=1), inplace=False)
+
+    def test_nhw_not_tile_aligned(self, device):
+        """NHW not divisible by TILE_SIZE must raise (groupnorm.cpp TT_FATAL).
+        Shape (1,1,48,256): NHW=48, 48%32!=0.  ROW_MAJOR keeps the unpadded shape."""
+        x = ttnn.from_torch(
+            torch.randn(1, 1, 48, 256, dtype=torch.bfloat16),
+            device=device,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+        )
+        with pytest.raises(RuntimeError, match="divisible by the tile size"):
+            ttnn.group_norm(x, num_groups=32, core_grid=ttnn.CoreGrid(y=1, x=1), inplace=False)
+
+    def test_no_valid_grid_exists(self, device):
+        """When no valid sub-grid can be found, validate_dram_grid must raise.
+        Shape (1,1,32,320): Ht=1, channels=320, groups=32.
+        nvc for x=8 is 2, rows_per_y=4, num_virtual_rows=4*8=32 > Ht=1."""
+        x = ttnn.from_torch(
+            torch.randn(1, 1, 32, 320, dtype=torch.bfloat16),
+            device=device,
+            layout=ttnn.TILE_LAYOUT,
+        )
+        with pytest.raises(RuntimeError, match="core_grid.*is invalid|Cannot find any valid core grid"):
+            ttnn.group_norm(x, num_groups=32, core_grid=ttnn.CoreGrid(y=8, x=8), inplace=False)
