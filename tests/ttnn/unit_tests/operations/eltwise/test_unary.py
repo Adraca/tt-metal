@@ -2150,6 +2150,21 @@ def test_unary_logical_not(device, torch_dtype, ttnn_dtype):
     assert torch.equal(output_tensor, golden_tensor)
 
 
+@pytest.mark.parametrize(
+    "torch_dtype, ttnn_dtype",
+    [(torch.float32, ttnn.float32)],
+)
+def test_unary_logical_not1(device, torch_dtype, ttnn_dtype):
+    in_data = torch.ones(64, 64, dtype=torch.bfloat16)
+
+    input_tensor = ttnn.from_torch(in_data, dtype=ttnn_dtype, layout=ttnn.TILE_LAYOUT, device=device)
+    output_tensor = ttnn.logical_not(input_tensor)
+    output_tensor = ttnn.to_torch(output_tensor)
+    golden_function = ttnn.get_golden_function(ttnn.logical_not)
+    golden_tensor = golden_function(in_data, device=device)
+    assert torch.equal(output_tensor, golden_tensor)
+
+
 @pytest.mark.parametrize("fast_and_approximate_mode", [True, False])
 @pytest.mark.parametrize(
     "torch_dtype, ttnn_dtype",
