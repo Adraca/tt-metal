@@ -21,7 +21,7 @@ sfpi_inline sfpi::vFloat _ckernel_sfpu_exp_(sfpi::vFloat val, const uint exp_bas
     sfpi::vFloat result = _sfpu_exp_improved_<is_fp32_dest_acc_en>(val);
     return result;
 }
-    
+
 template <
     bool APPROXIMATION_MODE,
     bool FAST_APPROX,
