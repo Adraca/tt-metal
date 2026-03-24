@@ -403,8 +403,6 @@ Tensor SdpaDecodeDeviceOperation::create_output_tensors(
 
 ttsl::hash::hash_t SdpaDecodeDeviceOperation::compute_program_hash(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
-    bool has_cur_pos = tensor_args.cur_pos_tensor.has_value();
-
     return operation::hash_operation<SdpaDecodeDeviceOperation>(
         operation_attributes.scale,
         operation_attributes.output_mem_config,
@@ -416,15 +414,16 @@ ttsl::hash::hash_t SdpaDecodeDeviceOperation::compute_program_hash(
         operation_attributes.use_mla,
         operation_attributes.head_dim_v,
         operation_attributes.sliding_window_size,
-        has_cur_pos,
         tensor_args.q,
         tensor_args.k,
         tensor_args.v,
         // Hash on page_table_tensor to properly size page table CB
         tensor_args.page_table_tensor,
         tensor_args.attention_sink,
-        // Full mask tensor (dtype, layout, memory) — not only presence; drives CB3 / accessors
-        tensor_args.attn_mask);
+        // Full mask tensor (dtype, layout, memory) — drives CB3 / accessors
+        tensor_args.attn_mask,
+        // Full cur_pos tensor — sharding / page size drive CB8 and reader compile-time args
+        tensor_args.cur_pos_tensor);
 }
 
 Tensor sdpa_decode(
