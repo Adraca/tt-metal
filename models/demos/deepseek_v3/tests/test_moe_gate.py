@@ -22,6 +22,13 @@ _prefill_seq_len = int(_max_seq_len_env) if _max_seq_len_env is not None else DE
 
 
 @pytest.mark.parametrize(
+    "device_params",
+    [
+        {"dispatch_core_axis": ttnn.DispatchCoreAxis.COL},
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize(
     "mode,batch_size_per_row,seq_len",
     [
         ("decode", USERS_PER_ROW, 1),
@@ -44,6 +51,7 @@ def test_forward_pass(
     cache_path,
     mesh_device,
     set_deterministic_env,
+    device_params,
 ):
     """Test forward pass against reference model."""
 

@@ -32,7 +32,7 @@ _prefill_seq_len = int(_max_seq_len_env) if _max_seq_len_env is not None else DE
 @pytest.mark.parametrize(
     "device_params",
     [
-        {"fabric_config": get_fabric_config()},
+        {"dispatch_core_axis": ttnn.DispatchCoreAxis.COL, "fabric_config": get_fabric_config()},
     ],
     indirect=True,
 )
@@ -64,6 +64,7 @@ def test_embedding_forward_pass(
     force_recalculate_weight_config,
     set_deterministic_env,
     state_dict,
+    device_params,
 ):
     logger.info("Setting up reference IO")
     module_path = "model.embed_tokens"

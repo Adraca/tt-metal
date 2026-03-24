@@ -67,7 +67,11 @@ def _sample_device_tokens(mesh_device, ccl, args, torch_input, user_params):
         {"temperature": 1.0, "top_k": 1, "top_p": 0.00, "seed": 42},  # top-k=1 (always argmax)
     ],
 )
-@pytest.mark.parametrize("device_params", [{"fabric_config": get_fabric_config()}], indirect=True)
+@pytest.mark.parametrize(
+    "device_params",
+    [{"dispatch_core_axis": ttnn.DispatchCoreAxis.COL, "fabric_config": get_fabric_config()}],
+    indirect=True,
+)
 def test_deepseek_device_sampling_argmax_path(mesh_device, ccl, hf_config, device_params, sampling_params):
     vocab_size = int(hf_config.vocab_size)
     args = make_deepseek_sampling_args(mesh_device, vocab_size=vocab_size)
@@ -99,7 +103,11 @@ def test_deepseek_device_sampling_argmax_path(mesh_device, ccl, hf_config, devic
 
 
 @torch.no_grad()
-@pytest.mark.parametrize("device_params", [{"fabric_config": get_fabric_config()}], indirect=True)
+@pytest.mark.parametrize(
+    "device_params",
+    [{"dispatch_core_axis": ttnn.DispatchCoreAxis.COL, "fabric_config": get_fabric_config()}],
+    indirect=True,
+)
 @pytest.mark.parametrize("use_tracing", [False, True], ids=["no_trace", "trace_mode"])
 def test_deepseek_device_sampling_stochastic_behavior(mesh_device, ccl, hf_config, device_params, use_tracing):
     vocab_size = int(hf_config.vocab_size)

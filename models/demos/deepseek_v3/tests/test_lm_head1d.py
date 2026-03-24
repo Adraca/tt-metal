@@ -42,7 +42,7 @@ class DeepseekV3LMHead(nn.Module):
 @pytest.mark.parametrize(
     "device_params",
     [
-        {"fabric_config": get_fabric_config()},
+        {"dispatch_core_axis": ttnn.DispatchCoreAxis.COL, "fabric_config": get_fabric_config()},
     ],
     indirect=True,
 )

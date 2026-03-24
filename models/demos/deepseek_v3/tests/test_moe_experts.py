@@ -69,6 +69,13 @@ _prefill_seq_len = int(_max_seq_len_env) if _max_seq_len_env is not None else DE
 
 
 @pytest.mark.parametrize(
+    "device_params",
+    [
+        {"dispatch_core_axis": ttnn.DispatchCoreAxis.COL},
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize(
     "mode, batch_size_per_row, seq_len",
     [
         ("decode", USERS_PER_ROW, 1),
@@ -96,6 +103,7 @@ def test_forward_pass(
     force_recalculate_weight_config,
     set_deterministic_env,
     state_dict: dict[str, torch.Tensor],
+    device_params,
 ):
     num_tokens = batch_size_per_row * mesh_device.shape[0] if mode == "decode" else seq_len
     num_experts_per_device = even_int_div(hf_config.n_routed_experts, mesh_device.get_num_devices())

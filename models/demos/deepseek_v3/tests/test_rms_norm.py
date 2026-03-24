@@ -71,6 +71,7 @@ def test_forward_pass(
     force_recalculate_weight_config,
     set_deterministic_env,
     state_dict: dict[str, torch.Tensor],
+    device_params,
 ):
     num_module_layers, _ = mesh_device.shape
 

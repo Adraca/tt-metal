@@ -29,8 +29,12 @@ from models.demos.deepseek_v3.utils.test_utils import (
 
 # TODO: Doesn't work on multi-host - we should figure out why
 @pytest.mark.requires_device(["TG"])
-@pytest.mark.parametrize("device_params", [{"fabric_config": get_fabric_config()}], indirect=True)
-def test_convert_weights_for_non_dequantized_mlp(hf_config, tmp_path, mesh_device):
+@pytest.mark.parametrize(
+    "device_params",
+    [{"dispatch_core_axis": ttnn.DispatchCoreAxis.COL, "fabric_config": get_fabric_config()}],
+    indirect=True,
+)
+def test_convert_weights_for_non_dequantized_mlp(hf_config, tmp_path, mesh_device, device_params):
     # Add a skip for mesh device shape 8x8 due to known issue https://github.com/tenstorrent/tt-metal/issues/35375
     if tuple(mesh_device.shape) == (8, 8):
         pytest.skip(
@@ -51,12 +55,18 @@ def test_convert_weights_for_non_dequantized_mlp(hf_config, tmp_path, mesh_devic
 
 # TODO: Doesn't work on multi-host - we should figure out why
 @pytest.mark.requires_device(["TG"])
-@pytest.mark.parametrize("device_params", [{"fabric_config": get_fabric_config()}], indirect=True)
+@pytest.mark.parametrize(
+    "device_params",
+    [{"dispatch_core_axis": ttnn.DispatchCoreAxis.COL, "fabric_config": get_fabric_config()}],
+    indirect=True,
+)
 @pytest.mark.parametrize(
     "MLPClass,module_path",
     [(NonExpert, "model.layers.0.mlp"), (SharedExpert, "model.layers.3.mlp.shared_experts")],
 )
-def test_convert_weights_for_dequantized_mlps(MLPClass, module_path, hf_config, tmp_path, mesh_device, state_dict):
+def test_convert_weights_for_dequantized_mlps(
+    MLPClass, module_path, hf_config, tmp_path, mesh_device, state_dict, device_params
+):
     if tuple(mesh_device.shape) == (8, 8):
         pytest.skip(
             "Skipping test for mesh device shape 8x8 due to known issue https://github.com/tenstorrent/tt-metal/issues/35375"
@@ -134,7 +144,11 @@ _max_seq_len_env = os.getenv("DEEPSEEK_MAX_SEQ_LEN_OVERRIDE")
 _prefill_seq_len = int(_max_seq_len_env) if _max_seq_len_env is not None else DEFAULT_PREFILL_SEQ_LEN
 
 
-@pytest.mark.parametrize("device_params", [{"fabric_config": get_fabric_config()}], indirect=True)
+@pytest.mark.parametrize(
+    "device_params",
+    [{"dispatch_core_axis": ttnn.DispatchCoreAxis.COL, "fabric_config": get_fabric_config()}],
+    indirect=True,
+)
 @pytest.mark.parametrize(
     "mode,seq_len",
     [

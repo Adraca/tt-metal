@@ -202,6 +202,7 @@ def _run_reference_decode_replay_consistency(
     [
         pytest.param(
             {
+                "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
                 "fabric_config": ttnn.FabricConfig.FABRIC_1D,
                 "trace_region_size": TRACE_REGION_SIZE,
             },
@@ -216,6 +217,7 @@ def test_mtp_reference_decode_replay_consistency(
     cache_path,
     force_recalculate_weight_config,
     set_deterministic_env,
+    device_params,
 ):
     """Fresh base decode under mtp=on should reproduce the stored greedy reference stream."""
     _run_reference_decode_replay_consistency(
@@ -236,6 +238,7 @@ def test_mtp_reference_decode_replay_consistency(
     [
         pytest.param(
             {
+                "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
                 "fabric_config": ttnn.FabricConfig.FABRIC_1D,
                 "trace_region_size": TRACE_REGION_SIZE,
             },
@@ -250,6 +253,7 @@ def test_mtp_reference_decode_replay_consistency_mtp_off(
     cache_path,
     force_recalculate_weight_config,
     set_deterministic_env,
+    device_params,
 ):
     """Fresh base decode under mtp=off should reproduce the stored greedy reference stream."""
     _run_reference_decode_replay_consistency(
@@ -1102,6 +1106,7 @@ class _MtpTraceRunner:
     [
         pytest.param(
             {
+                "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
                 "fabric_config": ttnn.FabricConfig.FABRIC_1D,
                 "trace_region_size": TRACE_REGION_SIZE,
             },
@@ -1120,6 +1125,7 @@ def test_generate_mtp_reference_io(
     cache_path,
     force_recalculate_weight_config,
     set_deterministic_env,
+    device_params,
 ):
     host_rank = int(os.getenv("TT_MESH_HOST_RANK", "0"))
 
@@ -1200,6 +1206,7 @@ def test_generate_mtp_reference_io(
     "device_params",
     [
         {
+            "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
             "fabric_config": ttnn.FabricConfig.FABRIC_1D,
             "trace_region_size": TRACE_REGION_SIZE,
         }
@@ -1222,6 +1229,7 @@ def test_mtp_accept_rate_and_perf(
     cache_path,
     force_recalculate_weight_config,
     set_deterministic_env,
+    device_params,
 ):
     """Validate MTP-only predictor accept rate and throughput against reference IO."""
     num_steps = int(os.getenv("DEEPSEEK_V3_MTP_REF_STEPS", str(DEFAULT_NUM_STEPS)))
@@ -1326,6 +1334,7 @@ def test_mtp_accept_rate_and_perf(
     "device_params",
     [
         {
+            "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
             "fabric_config": ttnn.FabricConfig.FABRIC_1D,
             "trace_region_size": TRACE_REGION_SIZE,
         }
@@ -1338,6 +1347,7 @@ def test_mtp_prefill_priming(
     cache_path,
     force_recalculate_weight_config,
     set_deterministic_env,
+    device_params,
 ):
     """Validate prefill priming for MTP (user0) and post-prefill accept rate."""
     num_steps = int(os.getenv("DEEPSEEK_V3_MTP_REF_STEPS", str(DEFAULT_NUM_STEPS)))
@@ -1457,6 +1467,7 @@ def test_mtp_prefill_priming(
     "device_params",
     [
         {
+            "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
             "fabric_config": ttnn.FabricConfig.FABRIC_1D,
             "trace_region_size": TRACE_REGION_SIZE,
         }
@@ -1469,6 +1480,7 @@ def test_mtp_verify_batching_aliasing(
     cache_path,
     force_recalculate_weight_config,
     set_deterministic_env,
+    device_params,
 ):
     """Validate verify-lane batching + page-table aliasing invariance."""
     num_steps = int(os.getenv("DEEPSEEK_V3_MTP_REF_STEPS", str(DEFAULT_NUM_STEPS)))
