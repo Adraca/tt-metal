@@ -977,12 +977,7 @@ std::vector<Tensor> atanh_bw(
                 std::nullopt,
                 output_mem_config),
             ttnn::nez(grad, output_mem_config)),
-        t_inf,
-        grad_a,
-        output_mem_config);
-    grad_a = where(
-        ttnn::logical_and(ttnn::eq(grad_a, t_inf, std::nullopt, output_mem_config), ttnn::ltz(grad, output_mem_config)),
-        -t_inf,
+        ttnn::where(ttnn::ltz(grad, output_mem_config), -t_inf, t_inf, output_mem_config),
         grad_a,
         output_mem_config);
     grad_tensor.emplace_back(grad_a);

@@ -327,6 +327,62 @@ void copy_tile(
         {});
 }
 
+// Fill [base_addr, base_addr + tile_bytes) with a repeating 32-bit pattern: write a small seed
+// via scalar stores, then repeatedly NOC-copy the already-filled prefix onto itself to double it
+// (same same-core loopback-read mechanism `copy_tile` above already uses), instead of a scalar
+// store per word.
+//
+// UNVERIFIED FOR PERFORMANCE — see tt-metal#54696. Doubling a 2KB (512-word) tile from a 16-byte
+// seed takes 7 stages (16 -> 32 -> 64 -> 128 -> 256 -> 512 -> 1024 -> 2048), and each stage must
+// wait for its copy to land before the next can safely read what the previous one just wrote — so
+// this trades ~512 scalar stores for 7 waits. Whether that's actually faster depends on per-wait
+// latency on real hardware, which was not measured here, and Blackhole's store-queue coalescing
+// (BlackholeA0/TensixTile/BabyRISCV/README.md:85) may already make the plain scalar loop close to
+// full-bandwidth for a fill this size — an independent LLM review (qwen3-max, 2026-08-28)
+// estimated the coalesced scalar loop at roughly 64 cycles on Blackhole, which as few as ~10
+// cycles of wait latency per stage would already beat. Correctness (output bit-pattern) is
+// verified; net cycle count on Wormhole and Blackhole is not, and should be measured before this
+// replaces the scalar loop anywhere it isn't already opt-in.
+//
+// The wait below is scoped to this function's own copies via NocOptions::TXN_ID
+// (noc_async_read_barrier_with_trid), NOT the plain Noc::async_read_barrier(), which would drain
+// *every* outstanding read on this core's NOC engine (see write_zeros_l1_barrier() above, which
+// calls that global form) and could stall unrelated in-flight traffic the caller had overlapping
+// with this fill (e.g. a K/V tile prefetch) — a real risk an earlier draft of this function had.
+// FILL_DOUBLING_TRID is a fixed, private id chosen to avoid the runtime's own reserved ids
+// (default-unused NocOptVals::trid is 0; this deliberately picks a different, unlikely-to-collide
+// value) — but whether any of this function's six call sites has *other* code in the same kernel
+// concurrently outstanding under the same trid was not exhaustively checked, so a collision (which
+// would make this wait too narrow, not too broad) is not fully ruled out either.
+inline void fill_l1_range_doubling(Noc noc, uint32_t base_addr, uint32_t tile_bytes, uint32_t pattern_word) {
+    constexpr uint32_t seed_words = 4;
+    constexpr uint32_t seed_bytes = seed_words * sizeof(uint32_t);
+    constexpr uint32_t FILL_DOUBLING_TRID = 41;
+    ASSERT(tile_bytes >= seed_bytes);
+    ASSERT(tile_bytes % sizeof(uint32_t) == 0);
+
+    volatile tt_l1_ptr uint32_t* ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(base_addr);
+    for (uint32_t i = 0; i < seed_words; i++) {
+        ptr[i] = pattern_word;
+    }
+
+    const uint8_t noc_id = noc.get_noc_id();
+    uint32_t filled_bytes = seed_bytes;
+    while (filled_bytes < tile_bytes) {
+        const uint32_t copy_bytes = std::min(filled_bytes, tile_bytes - filled_bytes);
+        UnicastEndpoint src;
+        noc.async_read<NocOptions::TXN_ID>(
+            src,
+            CoreLocalMem<uint32_t>(base_addr + filled_bytes),
+            copy_bytes,
+            {.noc_x = my_x[noc_id], .noc_y = my_y[noc_id], .addr = base_addr},
+            {},
+            {.trid = FILL_DOUBLING_TRID});
+        noc.async_read_barrier<NocOptions::TXN_ID>({.trid = FILL_DOUBLING_TRID});
+        filled_bytes += copy_bytes;
+    }
+}
+
 // Generic fill with -inf that works for all supported mask formats (bfp4, bfp8, bfloat16)
 template <uint32_t tile_bytes>
 void fill_neginf_tile(uint32_t cb_id, uint32_t tile_id) {
@@ -341,10 +397,10 @@ void fill_neginf_tile(uint32_t cb_id, uint32_t tile_id) {
     constexpr uint32_t total_words = tile_bytes / sizeof(uint32_t);
 
     if constexpr (tile_bytes == bf16_size) {
-        // BFLOAT16: fill with 0xFF80FF80 (-inf in bf16, two values per word)
-        for (uint32_t i = 0; i < total_words; i++) {
-            ptr[i] = 0xFF80FF80;
-        }
+        // BFLOAT16: fill with 0xFF80FF80 (-inf in bf16, two values per word). See
+        // fill_l1_range_doubling's docstring — perf vs. the plain scalar loop is unverified.
+        Noc noc;
+        fill_l1_range_doubling(noc, write_addr, tile_bytes, 0xFF80FF80);
     } else {
         // BFP formats (bfp4, bfp8): first 64 bytes are exponents, rest are mantissas
         constexpr uint32_t exp_words = num_exponents / sizeof(uint32_t);
